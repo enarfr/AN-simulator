@@ -1,1 +1,14 @@
+# Ignore Python cache
+__pycache__/
+.ipynb_checkpoints/
+*.pyc
+
+# Ignore local config
+config.ini
+
+#Simulation results
+script_representation_paraview.py
+success_points.vts
+success_rate.npy
+
 
