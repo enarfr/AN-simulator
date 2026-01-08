@@ -20,15 +20,16 @@ def find_bottom_card_idx(hand):
 @njit(inline='always')
 def draw_with_mulligan_priority(base_deck, t_land, t_ramp, t_bomb, t_draw, extra_mulligan):
     """
-    Mulligan procedure:
-      1. Try 7 cards → keep if criteria met.
-      2. Try again (free mulligan) → keep if criteria met.
-      3. If both fail and extra_mulligan=True:
-         - Draw 7 cards.
-         - Put one card on bottom of deck by priority:
-             Other (0) > Bomb (3) > Ramp (2) > Land (1)
-         - Keep remaining 6 cards.
-      4. If extra_mulligan=False → just keep last 7.
+    Mulligan procedure returning also the number of mulligans used.
+    
+    Returns
+    -------
+    deck : np.ndarray
+        Shuffled deck after mulligan adjustments
+    hand_size : int
+        Number of cards kept in starting hand
+    mulligan_count : int
+        Number of mulligans used (0, 1, or 2)
     """
     deck = np.empty_like(base_deck)
 
@@ -43,9 +44,8 @@ def draw_with_mulligan_priority(base_deck, t_land, t_ramp, t_bomb, t_draw, extra
         n_bomb = np.sum(hand == 3)
         n_draw = np.sum(hand == 4)
 
-
         if n_land >= t_land and n_ramp >= t_ramp and n_bomb >= t_bomb and n_draw >= t_draw:
-            return deck, 7  # keep 7-card hand
+            return deck, 7, attempt  # 0 or 1 mulligan used
 
     # --- Attempt 3 (only if extra_mulligan is True) ---
     if extra_mulligan:
@@ -64,13 +64,10 @@ def draw_with_mulligan_priority(base_deck, t_land, t_ramp, t_bomb, t_draw, extra
         deck[:-1] = np.concatenate((hand[:6], temp))
         deck[-1] = bottom_card
 
-        return deck, 6
+        return deck, 6, 2  # extra mulligan used
 
     # --- Otherwise, return 7-card hand from last shuffle ---
-    return deck, 7
-
-from numba import njit, prange
-import numpy as np
+    return deck, 7, 1  # failed on second attempt, no extra mulligan
 
 @njit(parallel=True)
 def simulate_games_detailed(N_sim, base_deck, t_land, t_ramp, t_bomb, t_draw, gameplan, extra_mulligan):
@@ -105,10 +102,14 @@ def simulate_games_detailed(N_sim, base_deck, t_land, t_ramp, t_bomb, t_draw, ga
     fail_turns = np.full(N_sim, -1, dtype=np.int8)
     fail_ops = np.full(N_sim, -1, dtype=np.int8)
     fail_cards = np.full(N_sim, -1, dtype=np.int8)
+    mulligan_stats = np.zeros(3, dtype=np.int64)  # index = number of mulligans used
+
     
     # --- Main parallel simulation ---
     for i in prange(N_sim):
-        deck, hand_size = draw_with_mulligan_priority(base_deck, t_land, t_ramp, t_bomb, t_draw, extra_mulligan)
+        deck, hand_size, N_mulligan = draw_with_mulligan_priority(base_deck, t_land, t_ramp, t_bomb, t_draw, extra_mulligan)
+        mulligan_stats[N_mulligan] += 1 #Accumulate statistics about mulligan number
+        
         hand = np.empty(12, dtype=np.uint8)  # increased size for optional draw
         hand[:hand_size] = deck[:hand_size]
         deck_pos = hand_size
@@ -182,30 +183,28 @@ def simulate_games_detailed(N_sim, base_deck, t_land, t_ramp, t_bomb, t_draw, ga
             if 0 <= t < len(gameplan) and 0 <= o < 2:
                 fail_summary[t, o] += 1
     
-    return success_rate, fail_summary
+    return success_rate, fail_summary, mulligan_stats
 
 
-def print_simulation_report(result, fail_summary, N_sim):
-    """
-    Pretty-print simulation results and failure breakdown.
-    """
-
-    # --- Compute basic metrics ---
+def print_simulation_report(result, fail_summary, mulligan_stats, N_sim):
     success_rate = result
     fail_rate = 100 - success_rate
     total_failures = np.sum(fail_summary)
 
-    # --- Operation labels (by turn) ---
-    operation_labels = [
-        ["Play Land"],                 # Turn 1
-        ["Play Land", "Play Ramp"],    # Turn 2
-        ["Play Land"],                 # Turn 3
-        ["Play Land", "Play Bomb"]     # Turn 4
-    ]
-
-    # --- Present readable output ---
     print(f"\n✅ Success rate: {success_rate:.2f}%")
     print(f"❌ Failure rate: {fail_rate:.2f}%")
+
+    # Print mulligan info
+    total_mulliganed = np.sum(mulligan_stats)
+    print("\n🎲 Mulligan usage breakdown:")
+    for i in range(3):
+        pct = mulligan_stats[i] / total_mulliganed * 100 if total_mulliganed > 0 else 0.0
+        print(f"{i} mulligan(s): {mulligan_stats[i]} games → {pct:.2f}%")
+
+    # Existing failure breakdown
+    operation_labels = [
+        ["Play Land"], ["Play Land", "Play Ramp"], ["Play Land"], ["Play Land", "Play Bomb"]
+    ]
 
     print("\n🔎 Failure breakdown by operation (as % of ALL games):")
     for turn in range(4):
@@ -220,5 +219,6 @@ def print_simulation_report(result, fail_summary, N_sim):
             if total_failures > 0:
                 pct = fail_summary[turn, op] / total_failures * 100
             print(f" Turn {turn+1} - {operation_labels[turn][op]}: {pct:6.2f}%")
+
 
 
