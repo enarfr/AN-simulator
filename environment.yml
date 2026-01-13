@@ -1,0 +1,11 @@
+name: AN-simulator
+channels:
+  - conda-forge
+dependencies:
+  - numpy
+  - scipy
+  - numba
+  - matplotlib
+  - plotly
+  - jupyterlab
+  - ipympl
