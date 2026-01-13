@@ -39,15 +39,22 @@ Check the primer of the deck for more information: https://moxfield.com/decks/YO
 ## 🚀 Getting Started
 
 ### 1. Clone the repository
+```
 git clone https://github.com/enarfr/AN-simulator.git
 cd AN-simulator
+```
 
 ### 2. Create a Conda environment (recommended)
+```
 conda env create -f environment.yml
+```
 
 ### 3. Run the notebook
+
+```
 jupyter lab
-notebooks/hyper_optimized.ipynb
+```
+Open notebook: main-simulator.ipynb and execute cells sequentially
 
 ## 📊 Output
 The simulator reports:
@@ -68,3 +75,4 @@ It does not account for interaction, mana color constraints,
 opponent disruption, or alternative lines of play.
 
 Use results as decision support, not absolute truth.
+
