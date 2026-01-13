@@ -1,14 +1,21 @@
-# Ignore Python cache
+# Python
 __pycache__/
-.ipynb_checkpoints/
 *.pyc
 
-# Ignore local config
-config.ini
+# Jupyter
+.ipynb_checkpoints/
 
-#Simulation results
-script_representation_paraview.py
-success_points.vts
-success_rate.npy
+# Virtual environments
+venv/
+.env/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Output data
+*.vts
+*.vtu
+*.vtk
 
 
