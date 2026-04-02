@@ -103,7 +103,7 @@ def LRBD_grid_search(Lmin, Lmax, Rmin, Rmax, Bmin, Bmax, Dmin, Dmax,
 
 
     elapsed = time.time() - start_time
-    print("\n🏁 Optimization complete in {:.1f}s.".format(elapsed))
+    print("\n Optimization complete in {:.1f}s.".format(elapsed))
     print("🔹 Best configuration: Lands={}, Ramp={}, Bombs={}, Draw={}".format(best_config[0], best_config[1], best_config[2], best_config[3]))
     print(f"🔹 Success rate: {best_rate:.2f}%")
 
