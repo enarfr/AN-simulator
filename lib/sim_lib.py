@@ -28,12 +28,13 @@ def find_bottom_card_idx(hand):
     int
         Index of the selected card to put on the bottom of the deck.
     """
+    hand_size = hand.size
 
     for priority_card in (0, 3, 2, 1, 4): #Draw
-        for idx in range(7): #in extra mulligan my hand is always 7 cards
+        for idx in range(hand_size): #Loop through the hand
             if hand[idx] == priority_card:
                 return idx
-    return 0  # fallback (should never happen
+    return None #Only happens if hand_size is 0
 
 # --- Mulligan helper ---
 @njit(inline='always')
@@ -91,24 +92,43 @@ def draw_with_mulligan_priority(base_deck, t_land, t_ramp, t_bomb, t_draw, extra
         if n_land >= t_land and n_ramp >= t_ramp and n_bomb >= t_bomb and n_draw >= t_draw:
             return deck, 7, attempt  # 0 or 1 mulligan used
 
-    # --- Attempt 3 (only if extra_mulligan is True) ---
+    # --- Attempt 3+ (only if extra_mulligan is True) ---
     if extra_mulligan:
-        deck[:] = base_deck
-        np.random.shuffle(deck)
-        hand = deck[:7]
+        # Minimum number of cards you need in your hand to fulfill the requirements
+        min_cards = t_land + t_ramp + t_bomb + t_draw 
+        for attempt in range(2,8):
+            
+            # Hand size assuming 1 free mulligan (2nd attempt -> 1 card to the bottom, 3rd -> 2 cards...)
+            hand_size = 7 - (attempt - 1) 
+            if hand_size < min_cards:
+                # If hand size for current attempt is less than required cards return previous attempt
+                return deck, hand_size + 1, attempt - 1
+            
+            deck[:] = base_deck
+            np.random.shuffle(deck)
+            
+            #Remove a number of cards equal to the difference between 7 and hand size one at a time
+            for i in range(0,7 - hand_size):
+                hand = deck[:(7-i)]
 
-        bottom_idx = find_bottom_card_idx(hand)
-        bottom_card = hand[bottom_idx]
+                bottom_idx = find_bottom_card_idx(hand)
+                bottom_card = hand[bottom_idx]
 
-        # Remove chosen card from hand by shifting left
-        hand[bottom_idx:6] = hand[bottom_idx + 1:7]
+                # Remove chosen card from hand by shifting left
+                hand[bottom_idx:(7 - i - 1)] = hand[bottom_idx + 1:(7 - i)]
 
-        # Build new deck: 6 cards from hand + the rest of the deck + bottomed card
-        temp = deck[7:].copy()
-        deck[:-1] = np.concatenate((hand[:6], temp))
-        deck[-1] = bottom_card
+                # Build new deck:  cards from hand + the rest of the deck + bottomed card
+                temp = deck[7:].copy()
+                deck[:-1] = np.concatenate((hand[:(7 - i - 1)], temp))
+                deck[-1] = bottom_card
+            
+            n_land = np.sum(hand[:hand_size] == 1)
+            n_ramp = np.sum(hand[:hand_size] == 2)
+            n_bomb = np.sum(hand[:hand_size] == 3)
+            n_draw = np.sum(hand[:hand_size] == 4)
 
-        return deck, 6, 2  # extra mulligan used
+            if n_land >= t_land and n_ramp >= t_ramp and n_bomb >= t_bomb and n_draw >= t_draw:
+                return deck, hand_size, attempt  # 2+ mulligan used
 
     # --- Otherwise, return 7-card hand from last shuffle ---
     return deck, 7, 1  # failed on second attempt, no extra mulligan
