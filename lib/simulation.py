@@ -1,7 +1,6 @@
 import numpy as np
 import time
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D  # registers the 3D projection
 from numba import njit, prange
 
 CARD_TYPE_MAP = {
@@ -13,53 +12,60 @@ CARD_TYPE_MAP = {
 }
 
 @njit(inline='always')
-def find_bottom_card_idx(hand, priority=(0, 3, 2, 1, 4)):
+def shuffle_deck(deck):
     """
-    Select the index of the card that should be placed on the bottom of the deck
-    during an extra mulligan.
-    
-    Cards are prioritized according to a fixed hierarchy, from highest to lowest
-    priority for bottoming. Default priority:
-        Other (0) > Bomb (3) > Ramp (2) > Land (1) > Draw (4)
-    
-    The function scans the first 7 cards of the hand (the hand size during an
-    extra mulligan) and returns the index of the first card matching the highest
-    priority found.
-    
+    Perform an in-place Fisher-Yates shuffle on a deck array.
+
+    Preferred over np.random.shuffle inside Numba parallel regions because it
+    operates entirely within the Numba runtime, using Numba's thread-local PRNG
+    state. This guarantees correctness and avoids any Python-side RNG contention
+    when called from prange workers.
+
     Parameters
     ----------
-    hand : np.ndarray
-        Array of card types representing the current hand.
-    priority : tuple of int, optional
-        Card priority order for bottoming, default is (0, 3, 2, 1, 4).
-    
+    deck : np.ndarray
+        1-D array of card type codes to be shuffled in place.
+
     Returns
     -------
-    int
-        Index of the selected card to put on the bottom of the deck.
+    None
+        The array is modified in place; nothing is returned.
     """
-
-    for selected_card in priority: #choose one card type
-        for idx in range(len(hand)): #loop through hand to find it
-            if hand[idx] == selected_card: #if found, return it. Otherwise, go to next type
-                return idx
-
-    return 0 #fallback for numba, does not happen by design
+ 
+    n = len(deck)
+    for i in range(n - 1, 0, -1):
+        j = np.random.randint(0, i + 1)
+        deck[i], deck[j] = deck[j], deck[i]
     
+#Mulligan
 @njit(inline='always')
 def mulligan(base_deck, t_land, t_ramp, t_bomb, t_draw, N_mulligans, priority=(0, 3, 2, 1, 4)):
     """
-    Perform a mulligan procedure on a deck to attempt to satisfy minimum card
+    Perform a London Mulligan procedure to attempt to satisfy minimum card
     requirements for the opening hand.
-    
-    The function simulates drawing a hand of 7 cards (or fewer if extra mulligans
-    are applied), optionally bottoming lower-priority cards, and checks if the
-    hand satisfies minimum requirements for Land, Ramp, Bomb, and Draw cards.
-    
+
+    Each attempt draws 7 cards fresh from a reshuffled deck. The first mulligan
+    is free (no bottoming). From the second mulligan onward, n_bottom = attempt - 1
+    cards must be placed on the bottom of the deck before keeping the hand.
+
+    Bottoming respects a two-phase rule:
+      1. Required cards (up to t_land Lands, t_ramp Ramp, t_bomb Bombs, t_draw Draw)
+         are locked in and protected from being bottomed.
+      2. The bottoming priority is applied only to the remaining free cards.
+
+    Example
+    -------
+    t_land=2, t_ramp=1, t_draw=0, t_bomb=0, attempt=3 (n_bottom=2), hand=(L,L,R,O,O,R,O),
+    priority=(O>R>B>L>D):
+      - Lock L, L, R as required.
+      - Free pool: (O, O, R, O). Bottom 2 by priority → bottom O, O.
+      - Final hand: (L, L, R, R, O). Bottom of deck: (..., O, O).
+
     Parameters
     ----------
     base_deck : np.ndarray
-        The initial deck array encoding card types.
+        The initial deck array encoding card types
+        (0=Other, 1=Land, 2=Ramp, 3=Bomb, 4=Draw).
     t_land : int
         Minimum number of Land cards required in the opening hand.
     t_ramp : int
@@ -69,85 +75,137 @@ def mulligan(base_deck, t_land, t_ramp, t_bomb, t_draw, N_mulligans, priority=(0
     t_draw : int
         Minimum number of Draw cards required in the opening hand.
     N_mulligans : int
-        Maximum number of mulligans allowed.
+        Maximum number of mulligans allowed (0 = no mulligans, keep first hand).
     priority : tuple of int, optional
-        Card priority order for bottoming during extra mulligans, default is (0,3,2,1,4).
-    
+        Card type order for bottoming, from most to least preferred to bottom.
+        Only applied to cards not locked in as required. Default: (0,3,2,1,4).
+
     Returns
     -------
     deck : np.ndarray
-        Deck array after shuffling and applying any bottoming.
+        Deck array after shuffling and bottoming. deck[:hand_size] is the
+        opening hand; deck[-n_bottom:] are the bottomed cards (if any).
     hand_size : int
-        Number of cards in the opening hand after mulligans.
+        Number of cards in the opening hand.
     attempt : int
-        Number of mulligan attempts performed to reach a valid hand.
+        Number of mulligan attempts performed (0 = kept first hand).
     """
-    
+
     deck = np.empty_like(base_deck)
-
     min_cards = t_land + t_ramp + t_bomb + t_draw
-
+    
+    # Buffer for bottom card values — at most N_mulligans cards are ever bottomed
+    bottom_cards = np.empty(N_mulligans, dtype=np.uint8)
+    
     for attempt in range(N_mulligans + 1):
 
-        # --- Determine hand size ---
+        # --- Determine hand size and number of cards to bottom ---
         if attempt <= 1:
+            # attempt=0: first draw, no bottoming
+            # attempt=1: first (free) mulligan, still no bottoming
             hand_size = 7
             n_bottom = 0
         else:
+            # attempt=2 → bottom 1, keep 6
+            # attempt=3 → bottom 2, keep 5  ... etc.
             n_bottom = attempt - 1
             hand_size = 7 - n_bottom
 
-        # --- Stop if impossible to satisfy requirements ---
+        # --- Stop if the hand would be too small to satisfy requirements ---
         if hand_size < min_cards:
+            # Return the last valid deck state; hand_size+1 and attempt-1
+            # reflect the previous (last viable) attempt.
             return deck, hand_size + 1, attempt - 1
 
-        # --- Shuffle fresh deck ---
+        # --- Shuffle a fresh copy of the deck ---
         deck[:] = base_deck
-        np.random.shuffle(deck)
+        shuffle_deck(deck)
 
-        # --- Apply bottoming (if needed) ---
+        # --- Apply bottoming if required ---
         if n_bottom > 0:
 
-            # Work on first 7 cards only
-            hand = deck[:7]
+            # Save the 7-card draw before any in-place modifications
+            hand7 = deck[:7].copy()
+
+            # Phase 1: lock in required cards (protect them from being bottomed).
+            # Walk the hand in order, satisfying each requirement with the first
+            # matching card found. Track which indices are locked.
+            is_required = np.zeros(7, dtype=np.bool_) #All false values
+            need_land = t_land
+            need_ramp = t_ramp
+            need_bomb = t_bomb
+            need_draw = t_draw
+
+            for k in range(7):
+                c = hand7[k]
+                if c == 1 and need_land > 0:
+                    is_required[k] = True
+                    need_land -= 1
+                elif c == 2 and need_ramp > 0:
+                    is_required[k] = True
+                    need_ramp -= 1
+                elif c == 3 and need_bomb > 0:
+                    is_required[k] = True
+                    need_bomb -= 1
+                elif c == 4 and need_draw > 0:
+                    is_required[k] = True
+                    need_draw -= 1
+
+            # Phase 2: select n_bottom cards to bottom from the free pool only.
+            # Walk the priority tuple; for each priority type, scan the hand for
+            # the first free (non-required, not-yet-bottomed) matching card.
+            # Track by index to handle duplicate card types correctly.
+            
+            will_bottom = np.zeros(7, dtype=np.bool_)
+            n_selected = 0
+            
+            for pcard in priority:
+                for k in range(7):
+                    if not is_required[k] and not will_bottom[k] and hand7[k] == pcard:
+                        will_bottom[k] = True
+                        bottom_cards[n_selected] = hand7[k]
+                        n_selected += 1
+                        if n_selected == n_bottom:
+                            break   # inner break — done selecting, exit inner loop
+                
+                if n_selected == n_bottom:
+                    break           # outer break — also exit outer loop
+
+            # Safety fallback: if the free pool was exhausted before n_bottom cards
+            # were selected (shouldn't happen with valid deck/requirements), fill
+            # remaining slots from any not-yet-selected card.
+            if n_selected < n_bottom:
+                for k in range(7):
+                    if not is_required[k] and not will_bottom[k]:
+                        will_bottom[k] = True
+                        bottom_cards[n_selected] = hand7[k]
+                        n_selected += 1
+                        if n_selected == n_bottom:
+                            break
+
+            # Phase 3: rebuild deck in a single pass.
+            #   [kept hand (7 - n_bottom cards)] | [original tail (deck[7:])] | [bottom cards]
+            write_pos = 0
+            for k in range(7):
+                if not will_bottom[k]:
+                    deck[write_pos] = hand7[k]
+                    write_pos += 1
+
+            tail_size = deck.size - 7
+            for k in range(tail_size):
+                deck[write_pos + k] = deck[7 + k]
 
             for i in range(n_bottom):
-                current_size = 7 - i
+                deck[deck.size - n_bottom + i] = bottom_cards[i]
 
-                # select card to bottom
-                idx = find_bottom_card_idx(hand, priority)
-                bottom_card = hand[idx]
-
-                # shift left
-                for j in range(idx, current_size - 1):
-                    hand[j] = hand[j + 1]
-
-                # rebuild deck in-place
-                new_hand_size = current_size - 1
-
-                # front: updated hand
-                deck[:new_hand_size] = hand[:new_hand_size]
-
-                # middle: rest of deck
-                tail_size = deck.size - 7
-                deck[new_hand_size:new_hand_size + tail_size] = deck[7:7 + tail_size]
-
-                # bottom card
-                deck[-1] = bottom_card
-
-                # update hand view
-                hand = deck[:new_hand_size]
-
-        # --- Evaluate hand ---
-        hand = deck[:hand_size]
+        # --- Evaluate the opening hand ---
         n_land = 0
         n_ramp = 0
         n_bomb = 0
         n_draw = 0
 
-        # manual counting (faster than np.sum in Numba loops)
         for k in range(hand_size):
-            c = hand[k]
+            c = deck[k]
             if c == 1:
                 n_land += 1
             elif c == 2:
@@ -158,13 +216,14 @@ def mulligan(base_deck, t_land, t_ramp, t_bomb, t_draw, N_mulligans, priority=(0
                 n_draw += 1
 
         if (n_land >= t_land and
-            n_ramp >= t_ramp and
-            n_bomb >= t_bomb and
-            n_draw >= t_draw):
+                n_ramp >= t_ramp and
+                n_bomb >= t_bomb and
+                n_draw >= t_draw):
             return deck, hand_size, attempt
 
-    # fallback: last attempt
+    # Fallback: return the last attempted hand regardless of whether it meets requirements
     return deck, hand_size, attempt
+
 
 @njit(parallel=True)
 def simulate_games(N_sim, base_deck, t_land, t_ramp, t_bomb, t_draw, gameplan, 
@@ -220,8 +279,8 @@ def simulate_games(N_sim, base_deck, t_land, t_ramp, t_bomb, t_draw, gameplan,
         deck, hand_size, N_mulligan_performed = mulligan(base_deck, t_land, t_ramp, t_bomb, t_draw, N_mulligans, priority)
         mulligan_stats[i] = N_mulligan_performed #Accumulate statistics about mulligan number
 
-        #Draw all cards that are seen until T5 (with an extra card if we have T1 draw spell
-        hand = np.empty(12, dtype=np.uint8)
+        #Draw all cards that are seen until T4 included
+        hand = np.empty(7 + len(gameplan) + 1, dtype=np.uint8)  # 7 opening + 1/turn + 1 for T1 draw
         hand[:hand_size] = deck[:hand_size]
         deck_pos = hand_size
 
@@ -229,7 +288,6 @@ def simulate_games(N_sim, base_deck, t_land, t_ramp, t_bomb, t_draw, gameplan,
         success = True
         fail_turn = -1
         fail_op = -1
-        fail_card_type = -1
         
         for turn_i in range(len(gameplan)): #Turn sequence
             
@@ -244,20 +302,21 @@ def simulate_games(N_sim, base_deck, t_land, t_ramp, t_bomb, t_draw, gameplan,
                 
                 # --- Optional Draw card at T1 ---
                 if card_type == 4 and turn_i == 0: #turn 1 and draw spell in hand
-                    found_draw_T1 = False
+                    
                     for j in range(hand_size): #loop through hand... 
                         if hand[j] == 4: # ...to search for draw spell
                             # Cast draw spell (remove it from hand)
                             hand[j:hand_size-1] = hand[j+1:hand_size]
                             hand_size -= 1
-                            found_draw_T1 = True
+                            
                             # Resolve effect: Draw next card from deck
                             if deck_pos < len(deck):
                                 hand[hand_size] = deck[deck_pos]
                                 hand_size += 1
                                 deck_pos += 1
                             break
-                    # Optional: skip if Draw not in hand in T1
+                    # Optional: skip regardless of whether Draw was found —
+                    # absence of a Draw spell at T1 is not a failure.
                     continue
                 
                 # --- Required card play ---
@@ -273,7 +332,6 @@ def simulate_games(N_sim, base_deck, t_land, t_ramp, t_bomb, t_draw, gameplan,
                     success = False
                     fail_turn = turn_i
                     fail_op = operation_idx
-                    fail_card_type = card_type
                     break  # stop this game
             
             if not success:
@@ -296,52 +354,3 @@ def simulate_games(N_sim, base_deck, t_land, t_ramp, t_bomb, t_draw, gameplan,
                 fail_summary[t, o] += 1
     
     return success_rate, fail_summary, mulligan_stats
-
-def print_simulation_report(result, fail_summary, mulligan_stats, N_sim, N_mulligans):
-    """
-    Print a formatted report of simulation results, including success rate,
-    failure breakdown, and mulligan usage statistics.
-    
-    Parameters
-    ----------
-    result : float
-        Overall success rate (percentage).
-    fail_summary : np.ndarray
-        2D array of failure counts by turn and operation.
-    mulligan_stats : np.ndarray
-        Array recording the number of mulligans performed in each game.
-    N_sim : int
-        Total number of simulated games.
-    N_mulligans : int
-        Maximum number of mulligans allowed.
-    """
-    
-    success_rate = result
-    fail_rate = 100 - success_rate
-    total_failures = np.sum(fail_summary)
-
-    print("\n✅ Success rate: {:.2f}%".format(success_rate))
-    print("❌ Failure rate: {:.2f}%".format(fail_rate))
-
-    # --- Mulligan usage breakdown ---
-    print("\n🎲 Mulligan usage breakdown:")
-    for m in range(N_mulligans + 1):
-        count = np.sum(mulligan_stats == m)
-        pct = count / N_sim * 100
-        print(f"{m} mulligan(s): {count} games → {pct:.2f}%")
-
-    # --- Failure breakdown ---
-    operation_labels = [["Play Land"], ["Play Land", "Play Ramp"], ["Play Land"], ["Play Land", "Play Bomb"]]
-
-    print("\n🔎 Failure breakdown by operation (as % of ALL games):")
-    for turn in range(len(fail_summary)):
-        for op in range(len(operation_labels[turn])):
-            print(f" Turn {turn+1} - {operation_labels[turn][op]}: {fail_summary[turn, op] / N_sim * 100:6.3f}%")
-
-    print("\n📊 Conditional breakdown (as % of FAILED games):")
-    for turn in range(len(fail_summary)):
-        for op in range(len(operation_labels[turn])):
-            pct = 0.0
-            if total_failures > 0:
-                pct = fail_summary[turn, op] / total_failures * 100
-            print(f" Turn {turn+1} - {operation_labels[turn][op]}: {pct:6.2f}%")

@@ -5,6 +5,55 @@ import matplotlib.pyplot as plt
 
 fs = (8, 4.5) #figsize for plots
 
+def print_simulation_report(result, fail_summary, mulligan_stats, N_sim, N_mulligans):
+    """
+    Print a formatted report of simulation results, including success rate,
+    failure breakdown, and mulligan usage statistics.
+    
+    Parameters
+    ----------
+    result : float
+        Overall success rate (percentage).
+    fail_summary : np.ndarray
+        2D array of failure counts by turn and operation.
+    mulligan_stats : np.ndarray
+        Array recording the number of mulligans performed in each game.
+    N_sim : int
+        Total number of simulated games.
+    N_mulligans : int
+        Maximum number of mulligans allowed.
+    """
+    
+    success_rate = result
+    fail_rate = 100 - success_rate
+    total_failures = np.sum(fail_summary)
+
+    print("\n✅ Success rate: {:.2f}%".format(success_rate))
+    print("❌ Failure rate: {:.2f}%".format(fail_rate))
+
+    # --- Mulligan usage breakdown ---
+    print("\n🎲 Mulligan usage breakdown:")
+    for m in range(N_mulligans + 1):
+        count = np.sum(mulligan_stats == m)
+        pct = count / N_sim * 100
+        print(f"{m} mulligan(s): {count} games → {pct:.2f}%")
+
+    # --- Failure breakdown ---
+    operation_labels = [["Play Land"], ["Play Land", "Play Ramp"], ["Play Land"], ["Play Land", "Play Bomb"]]
+
+    print("\n🔎 Failure breakdown by operation (as % of ALL games):")
+    for turn in range(len(fail_summary)):
+        for op in range(len(operation_labels[turn])):
+            print(f" Turn {turn+1} - {operation_labels[turn][op]}: {fail_summary[turn, op] / N_sim * 100:6.3f}%")
+
+    print("\n📊 Conditional breakdown (as % of FAILED games):")
+    for turn in range(len(fail_summary)):
+        for op in range(len(operation_labels[turn])):
+            pct = 0.0
+            if total_failures > 0:
+                pct = fail_summary[turn, op] / total_failures * 100
+            print(f" Turn {turn+1} - {operation_labels[turn][op]}: {pct:6.2f}%")
+
 def LRBD_grid_search(Lmin, Lmax, Rmin, Rmax, Bmin, Bmax, Dmin, Dmax,
                      N, t_land, t_ramp, t_bomb, t_draw, N_sim,
                      gameplan, N_mulligans=1, priority_chars=('O','B','R','L','D')):
