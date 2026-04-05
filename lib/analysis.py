@@ -2,8 +2,9 @@ import numpy as np
 import time
 from lib.simulation import simulate_games, CARD_TYPE_MAP
 import matplotlib.pyplot as plt
+from pathlib import Path
 
-fs = (8, 4.5) #figsize for plots
+fs = (4, 2.25) #figsize for plots
 
 def print_simulation_report(result, fail_summary, mulligan_stats, N_sim, N_mulligans):
     """
@@ -268,7 +269,7 @@ def analyze_single_variable(var_name, var_min, var_max,
                             fixed_config, N,
                             t_land, t_ramp, t_bomb, t_draw,
                             N_sim, gameplan, N_mulligans, priority_chars,
-                            show_plot=True):
+                            show_plot=True, save_plot=False):
     """
     Analyze the effect of varying a single card type on success rate while
     keeping all other card counts fixed. Also computes the numerical derivative
@@ -349,41 +350,42 @@ def analyze_single_variable(var_name, var_min, var_max,
     values = np.array(values)
     winrates = np.array(winrates)
 
-    # --- Compute derivative of winrate with respect to value ---
-    derivatives = np.zeros_like(winrates) # central differences for interior points, 
-
-    for i in range(1, len(winrates) - 1): #central differences for interior points
-        derivatives[i] = (winrates[i+1] - winrates[i-1]) / 2.0
-
-    # Forward/backward differences on the edges
-    derivatives[0] = winrates[1] - winrates[0]
-    derivatives[-1] = winrates[-1] - winrates[-2]
+    # --- Compute derivative of winrate with respect to value --- 
+    derivatives = np.array([(winrates[i+1] - winrates[i-1]) / 2.0 for i in range(1, len(winrates) - 1)]) #central differences
+    interior_values = values[1:-1] #axis for derivatives
 
     # --- Plot ---
     if show_plot:
-
-        fig, ax1 = plt.subplots(figsize=fs)
-
+        fig, ax1 = plt.subplots(figsize=(4, 2.25))
+    
         # --- Left axis (winrate) ---
         color1 = "tab:blue"
-        ax1.set_xlabel(f"{var_name} count")
-        ax1.set_ylabel("Winrate (%)", color=color1)
-        ax1.plot(values, winrates, marker='o', color=color1)
-        ax1.tick_params(axis='y', labelcolor=color1)
+        ax1.set_xlabel(f"{var_name} count", fontsize=6)
+        ax1.set_ylabel("Winrate (%)", color=color1, fontsize=6)
+        ax1.plot(values, winrates, marker='o', color=color1, markersize=3, linewidth=1)
+        ax1.tick_params(axis='y', labelcolor=color1, labelsize=5)
+        ax1.tick_params(axis='x', labelsize=5)
         ax1.spines['left'].set_color(color1)
-        ax1.grid(True)
-        
+        ax1.grid(True, linewidth=0.5)
+    
         # --- Right axis (derivative) ---
         color2 = "tab:red"
         ax2 = ax1.twinx()
-        ax2.set_ylabel("Δ Winrate per +1 card (%)", color=color2)
-        ax2.plot(values, derivatives, linestyle='--', marker='x', color=color2)
-        ax2.tick_params(axis='y', labelcolor=color2)
+        ax2.set_ylabel("Δ Winrate per +1 card (%)", color=color2, fontsize=6)
+        ax2.plot(interior_values, derivatives, linestyle='--', marker='x', color=color2, markersize=3, linewidth=1)
+        ax2.tick_params(axis='y', labelcolor=color2, labelsize=5)
         ax2.spines['right'].set_color(color2)
-        
+    
         # Title and layout
-        plt.title(f"Winrate and Marginal Gain vs {var_name}")
-        plt.tight_layout()
-        plt.show()
+        plt.title(f"Winrate and Marginal Gain vs {var_name}", fontsize=7)
+        #plt.subplots_adjust(left=0.15, right=0.85, top=0.88, bottom=0.18)
+        plt.tight_layout(pad=0.3)
+        if save_plot:
+            fig_name = var_name + "_gain.png"
+            save_dir = Path.cwd() /"data"
+            plt.savefig(save_dir/fig_name, dpi=300)
+            plt.close()
+        else:
+            plt.show()
 
     return values, winrates, derivatives
